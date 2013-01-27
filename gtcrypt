@@ -1,0 +1,348 @@
+#!/usr/bin/env python
+
+"""
+TODO:
+-mount options
+-volume state
+
+"""
+
+import truecrypt, os
+
+#------------------------------GTK GUI----------------------------
+import pygtk
+pygtk.require('2.0')
+import gtk
+
+def buttest(widget, data):
+	print "not implemented: %s was pressed" % data
+
+def PathEntry(label = None, isafile = False):
+	pathentry = gtk.HBox(False, 0)
+
+	def selectFile(self, widget):
+		#pathentry.filesel = gtk.FileSelection(label)
+
+		if isafile :
+			pathentry.filesel = gtk.FileChooserDialog(title=label,action=gtk.FILE_CHOOSER_ACTION_OPEN,
+                                  buttons=(gtk.STOCK_CANCEL,gtk.RESPONSE_CANCEL,gtk.STOCK_OPEN,gtk.RESPONSE_OK))
+		else :
+			pathentry.filesel = gtk.FileChooserDialog(title=label,action=gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER,
+                                  buttons=(gtk.STOCK_CANCEL,gtk.RESPONSE_CANCEL,gtk.STOCK_OPEN,gtk.RESPONSE_OK))
+
+		filename = pathentry.entry.get_text()
+		# pathentry.filesel.set_filename(filename)
+
+		response = pathentry.filesel.run()
+		if response == gtk.RESPONSE_OK :
+			pathentry.setEntry(pathentry) # <-- Y??
+		pathentry.filesel.destroy()
+
+	def setEntry(self):
+		pathentry.entry.set_text(pathentry.filesel.get_filename())
+		buttest(None, pathentry.filesel.get_filename())
+
+	pathentry.selectFile = selectFile
+	pathentry.setEntry = setEntry
+
+	if label :
+		l = gtk.Label(label)
+		pathentry.pack_start(l, False)
+		l.show()
+
+	pathentry.entry = gtk.Entry()
+	pathentry.pack_start(pathentry.entry, True)
+	pathentry.entry.show()
+
+	b = gtk.Button("Browse...")
+	b.connect("clicked", pathentry.selectFile, "mounting volume")
+	pathentry.pack_start(b, False)
+	b.show()
+
+	return pathentry
+
+def ScrolledListView(types = (), clabels = ()):
+	store = gtk.ListStore(*types)
+
+        slvwidget = gtk.ScrolledWindow()
+	slvwidget.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+
+	view = gtk.TreeView(store)
+	slvwidget.add_with_viewport(view)
+
+	for i in range(min(len(types), len(clabels))):
+		tvcolumn = gtk.TreeViewColumn(clabels[i])
+		view.append_column(tvcolumn)
+		cell = gtk.CellRendererText()
+		tvcolumn.pack_start(cell, True)
+		tvcolumn.add_attribute(cell, 'text', i)
+
+	view.show()
+	slvwidget.store = store
+	slvwidget.view = view
+
+	return slvwidget
+
+def showMessage(msg, type = gtk.MESSAGE_INFO):
+	dlg = gtk.MessageDialog(type = type, message_format=msg, buttons=gtk.BUTTONS_OK)
+	dlg.run()
+	dlg.destroy()
+
+def askPassword(volume, mntpnt):
+	password = None
+	dlg = gtk.Dialog('gtcrypt',
+		buttons=(gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
+
+	l = gtk.Label('Volume: '+volume)
+	dlg.vbox.pack_start(l)
+	l.show()
+	l = gtk.Label('Mount point: '+mntpnt)
+	dlg.vbox.pack_start(l)
+	l.show()
+	l = gtk.Label('Password:')
+	dlg.vbox.pack_start(l)
+	l.show()
+	entry = gtk.Entry()
+	entry.set_visibility(False)
+	dlg.vbox.pack_start(entry)
+	entry.show()
+
+	if dlg.run() == gtk.RESPONSE_ACCEPT :
+		password = entry.get_text()
+	dlg.destroy()
+
+	return password
+
+def getPrefDir():
+	return os.environ.get('HOME') + '/.gtcrypt'
+
+def loadVolumes():
+	try:
+		file = open(getPrefDir() + '/volumes', "r")
+	except: return
+	for line in file:
+		yield line.split()
+	file.close()
+
+def storeVolumes(store):
+        if not os.access(getPrefDir(), os.F_OK):
+		os.mkdir(getPrefDir())
+	try:
+		file = open(getPrefDir() + '/volumes', "w")
+	except: return
+
+	def _storeVolume(model, path, iter, file):
+		volume, mntpnt = model.get(iter, 0, 1)
+		file.write(volume+' '+mntpnt+'\n')
+
+	store.foreach(_storeVolume, file)
+	file.close()
+
+class MainWindow:
+	def delete_event(self, widget, event, data=None):
+		storeVolumes(self.treeview.store)
+		gtk.main_quit()
+		return False
+
+	def clearInput(self, widget):
+		self.volentry.entry.set_text('')
+		self.mntentry.entry.set_text('')
+
+	def selectEntry(self, widget):
+		model, iter = self.treeview.view.get_selection().get_selected()
+		volume, mntpnt = model.get(iter, 0, 1)
+		self.volentry.entry.set_text(volume)
+		self.mntentry.entry.set_text(mntpnt)
+
+	def addEntry(self, widget):
+		volume = self.volentry.entry.get_text()
+		mntpnt = self.mntentry.entry.get_text()
+		self.treeview.store.append([volume, mntpnt])
+
+	def modifyEntry(self, widget):
+		volume = self.volentry.entry.get_text()
+		mntpnt = self.mntentry.entry.get_text()
+		model, iter = self.treeview.view.get_selection().get_selected()
+		self.treeview.store.set(iter, 0, volume, 1, mntpnt)
+
+	def deleteEntry(self, widget):
+		model, iter = self.treeview.view.get_selection().get_selected()
+		treeiter = self.treeview.store.remove(iter)
+		self.clearInput(widget)
+
+	def mountVolume(self, widget):
+		model, iter = self.treeview.view.get_selection().get_selected()
+		volume, mntpnt = model.get(iter, 0, 1)
+		try:
+			truecrypt.mountVolume(volume, mntpnt, askPassword)
+			showMessage('Volume mounted')
+		except truecrypt.WrongPassword:
+			showMessage('Wrong password', gtk.MESSAGE_WARNING)
+		except truecrypt.UnexistentVolume:
+			showMessage('Volume does not exist', gtk.MESSAGE_WARNING)
+		except truecrypt.MountFailed:
+			showMessage('Mount failure', gtk.MESSAGE_WARNING)
+		except truecrypt.VolumeMapped:
+			showMessage('Volume already mapped', gtk.MESSAGE_WARNING)
+
+	def unmountVolume(self, widget):
+		model, iter = self.treeview.view.get_selection().get_selected()
+		volume, = model.get(iter, 0)
+		try:
+			truecrypt.unmountVolume(volume)
+			showMessage('Volume unmounted')
+		except truecrypt.VolumeNotMapped:
+			showMessage('Volume not mapped', gtk.MESSAGE_WARNING)
+
+	def showAbout(self, widget):
+		about = gtk.AboutDialog()
+		about.set_title('About gtcrypt')
+		about.set_name('gtcrypt')
+		about.set_version('0.1')
+		about.set_copyright('Vasco Flores vasco.flores@gmail.com')
+		about.set_comments('truecrypt volume management GUI')
+		about.run()
+		about.destroy()
+
+	def __init__(self):
+		self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
+		self.window.set_title("gtcrypt - truecrypt management GUI")
+		self.window.connect("delete_event", self.delete_event)
+		self.window.set_size_request(500, -1)
+		self.window.set_border_width(5)
+
+		layout = gtk.VBox(False, 5)
+		self.window.add(layout)
+
+		self.treeview = ScrolledListView((str, str), ('Volume file', 'Mount point'))
+		# self.treeview.store.append(['../../Jupiter', '/mnt/other'])
+		for volume in loadVolumes():
+			self.treeview.store.append(volume)
+		#for parent in range(4):
+		# 	self.treeview.store.append(['Volume%i' % parent, '/home/user%i' % parent])
+		layout.add(self.treeview)
+
+		self.treeview.view.connect("cursor-changed", self.selectEntry)
+		self.treeview.set_size_request(-1, 200)
+		self.treeview.show()
+
+		buttonline = gtk.HButtonBox()
+		layout.add(buttonline)
+
+		b = gtk.Button("new", gtk.STOCK_NEW)
+		b.connect("clicked", self.clearInput)
+		buttonline.add(b)
+		b.show()
+
+		b = gtk.Button("add", gtk.STOCK_ADD)
+		b.connect("clicked", self.addEntry)
+		buttonline.add(b)
+		b.show()
+
+		b = gtk.Button("modify", gtk.STOCK_APPLY)
+		b.connect("clicked", self.modifyEntry)
+		buttonline.add(b)
+		b.show()
+
+		b = gtk.Button("delete", gtk.STOCK_DELETE)
+		b.connect("clicked", self.deleteEntry)
+		buttonline.add(b)
+		b.show()
+
+		buttonline.show()
+
+		self.volentry = PathEntry("Volume file:", True)
+		self.volentry.set_size_request(-1, 30)
+		layout.add(self.volentry)
+		self.volentry.show()
+
+		self.mntentry = PathEntry("Mounting point:", False)
+		self.mntentry.set_size_request(-1, 30)
+		layout.add(self.mntentry)
+		self.mntentry.show()
+
+		"""
+		box = gtk.HBox(False, 0)
+		box.set_size_request(-1, 30)
+		layout.add(box)
+
+		l = gtk.Label("Mounting options:")
+		box.pack_start(l, False)
+		l.show()
+		entry = gtk.Entry()
+		entry.set_text('unimplemented')
+		box.pack_start(entry, True)
+		entry.show()
+		box.show()"""
+
+		buttonline = gtk.HButtonBox()
+		layout.add(buttonline)
+
+		b = gtk.Button("mount")
+		b.connect("clicked", self.mountVolume)
+		buttonline.add(b)
+		b.show()
+
+		b = gtk.Button("umount")
+		b.connect("clicked", self.unmountVolume)
+		buttonline.add(b)
+		b.show()
+
+		b = gtk.Button("about", gtk.STOCK_ABOUT)
+		b.connect("clicked", self.showAbout)
+		buttonline.add(b)
+		b.show()
+
+		buttonline.show()
+
+		"""
+		frame = gtk.Frame("output:")
+		layout.add(frame)
+		outview = gtk.TextView()
+		outview.set_editable(False)
+		outview.set_cursor_visible(False)
+		frame.add(outview)
+		outview.set_size_request(-1, 100)
+		outview.show()
+		frame.show()"""
+
+		layout.show()
+		self.window.show()
+
+from optparse import OptionParser
+
+if __name__ == "__main__":
+	usage = "usage: gtcrypt [volume_file]"
+	parser = OptionParser(usage)
+	(options, args) = parser.parse_args()
+	if len(args) > 1:
+		parser.error("incorrect number of arguments")
+	elif len(args) == 1:
+		filesel = gtk.FileChooserDialog(title="select mounting point",
+			action=gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER,
+			buttons=(gtk.STOCK_CANCEL,gtk.RESPONSE_CANCEL,gtk.STOCK_OPEN,gtk.RESPONSE_OK))
+
+		mntpnt = ''
+		response = filesel.run()
+		if response == gtk.RESPONSE_OK :
+			mntpnt = filesel.get_filename()
+		filesel.destroy()
+
+		askPassword('fhdfsh','dfhdf')
+
+		volume = args[0]
+		try:
+			truecrypt.mountVolume(volume, mntpnt, askPassword)
+			showMessage('Volume mounted')
+		except truecrypt.WrongPassword:
+			showMessage('Wrong password', gtk.MESSAGE_WARNING)
+		except truecrypt.UnexistentVolume:
+			showMessage('Volume does not exist', gtk.MESSAGE_WARNING)
+		except truecrypt.MountFailed:
+			showMessage('Mount failure', gtk.MESSAGE_WARNING)
+		except truecrypt.VolumeMapped:
+			showMessage('Volume already mapped', gtk.MESSAGE_WARNING)
+
+	else :
+		MainWindow()
+		gtk.main()
